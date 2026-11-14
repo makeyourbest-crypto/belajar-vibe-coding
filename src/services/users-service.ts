@@ -24,6 +24,19 @@ export interface LoginUserResult {
   error?: string;
 }
 
+export interface CurrentUserResponse {
+  id: number;
+  name: string;
+  email: string;
+  created_at: Date | string;
+}
+
+export interface GetCurrentUserResult {
+  success: boolean;
+  user?: CurrentUserResponse;
+  error?: string;
+}
+
 export class UserService {
   static async registerUser(input: RegisterUserInput): Promise<RegisterUserResult> {
     // 1. Cek apakah email sudah terdaftar
@@ -94,6 +107,53 @@ export class UserService {
     return {
       success: true,
       token,
+    };
+  }
+
+  static async getCurrentUser(token: string): Promise<GetCurrentUserResult> {
+    if (!token) {
+      return {
+        success: false,
+        error: "Unauthorized",
+      };
+    }
+
+    // 1. Cari session berdasarkan token
+    const [session] = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.token, token))
+      .limit(1);
+
+    if (!session) {
+      return {
+        success: false,
+        error: "Unauthorized",
+      };
+    }
+
+    // 2. Ambil data user berdasarkan session.userId
+    const [user] = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        created_at: users.createdAt,
+      })
+      .from(users)
+      .where(eq(users.id, session.userId))
+      .limit(1);
+
+    if (!user) {
+      return {
+        success: false,
+        error: "Unauthorized",
+      };
+    }
+
+    return {
+      success: true,
+      user,
     };
   }
 }

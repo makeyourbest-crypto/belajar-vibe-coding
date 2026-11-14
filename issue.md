@@ -1,7 +1,7 @@
-# Plan: Implementasi Login User & Manajemen Session (API & Service)
+# Plan: Implementasi API Get Current User (`GET /api/users/current`)
 
 ## 📌 Deskripsi Tugas
-Implementasikan fitur otentikasi login pengguna dan pembuatan token session pada aplikasi backend ElysiaJS dengan database MySQL menggunakan Drizzle ORM.
+Implementasikan endpoint API untuk mengambil data profil pengguna yang sedang login (`current user`) berdasarkan token autentikasi Bearer yang dikirimkan melalui request header.
 
 Panduan ini disusun secara terstruktur langkah demi langkah agar dapat diimplementasikan dengan mudah oleh junior programmer atau model AI.
 
@@ -9,207 +9,173 @@ Panduan ini disusun secara terstruktur langkah demi langkah agar dapat diimpleme
 
 ## 📋 Spesifikasi Fitur
 
-### 1. Spesifikasi Database: Tabel `sessions`
-Tambahkan schema tabel baru `sessions` pada file `src/db/schema.ts` dengan kolom-kolom berikut:
-- **`id`**: integer, auto-increment, primary key (`serial("id")` atau `int("id").autoincrement().primaryKey()`)
-- **`token`**: varchar(255), not null (menyimpan string token UUID untuk user yang login)
-- **`user_id`**: integer, not null, foreign key (`references(() => users.id)`)
-- **`created_at`**: timestamp, default current timestamp, not null (`timestamp("created_at").defaultNow().notNull()`)
-
----
-
-### 2. Spesifikasi Endpoint API Login
-- **Method**: `POST`
-- **Path**: `/api/users/login`
-- **Content-Type**: `application/json`
-
-#### Request Body
-```json
-{
-  "email": "eko@localhost",
-  "password": "rahasia"
-}
-```
-
-#### Validasi Input
-- `email`: string, format email valid, tidak boleh kosong.
-- `password`: string, tidak boleh kosong.
+### 1. Spesifikasi Endpoint API
+- **Method**: `GET`
+- **Path**: `/api/users/current`
+- **Header**:
+  - `Authorization`: `Bearer <token>` (token session yang diperoleh saat login dan tersimpan di tabel `sessions`).
 
 #### Response Body: Berhasil (HTTP Status 200)
+Jika token valid dan session ditemukan:
 ```json
 {
-  "data": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+  "data": {
+    "id": 1,
+    "name": "eko",
+    "email": "eko@localhost",
+    "created_at": "2026-11-15T02:18:34.000Z"
+  }
 }
 ```
-*(Nilai `"data"` berupa string token UUID yang baru dibuat dan tersimpan di tabel `sessions`).*
+> **Catatan Keamanan**: Kolom sensitif seperti `password` **TIDAK BOLEH** disertakan dalam response data.
 
-#### Response Body: Gagal (HTTP Status 400)
-Jika email tidak ditemukan atau password tidak sesuai hash bcrypt:
+#### Response Body: Gagal / Tidak Terotentikasi (HTTP Status 401)
+Jika header `Authorization` tidak dikirim, format tidak sesuai (`Bearer <token>`), token tidak ditemukan di tabel `sessions`, atau user tidak ada:
 ```json
 {
-  "error": "Email atau password salah"
+  "error": "Unauthorized"
 }
 ```
-
-> **Catatan Keamanan**: Pesan error disamakan ("Email atau password salah") baik ketika email tidak ditemukan maupun password salah untuk mencegah *user enumeration*.
 
 ---
 
 ## 📂 Aturan Struktur Folder & Penamaan File
-Gunakan arsitektur berlapis (*layered architecture*) di dalam direktori `src/`:
+Tetap konsisten dengan arsitektur berlapis (*layered architecture*) di dalam direktori `src/`:
 
 ```text
 src/
 ├── db/
 │   ├── index.ts              # Konfigurasi koneksi MySQL pool & Drizzle
-│   └── schema.ts             # Definisi tabel (users, posts, sessions)
+│   └── schema.ts             # Definisi tabel (users, sessions, posts)
 ├── services/                 # Layer Business Logic
-│   └── users-service.ts      # Logic otentikasi, verifikasi hash bcrypt, pembuatan token UUID & session
+│   └── users-service.ts      # Logic validasi token session dan retrieval data user
 ├── routes/                   # Layer Routing & HTTP Controller
-│   └── users-route.ts        # Route Elysia, validasi schema request/response
+│   └── users-route.ts        # Route Elysia, ekstraksi header, response mapping
 └── index.ts                  # Entry point utama aplikasi
 ```
-
-- Route menggunakan format penamaan: `users-route.ts`
-- Service menggunakan format penamaan: `users-service.ts`
 
 ---
 
 ## 🛠️ Tahapan Implementasi
 
-### Tahap 1: Tambahkan Schema `sessions` & Migrasi Database
-1. Buka file `src/db/schema.ts`.
-2. Import helper tipe kolom yang diperlukan (`int`, dsb.) dari `drizzle-orm/mysql-core`.
-3. Definisikan tabel `sessions`:
-   - `id`: `serial("id").primaryKey()` atau `int("id").autoincrement().primaryKey()`
-   - `token`: `varchar("token", { length: 255 }).notNull().unique()`
-   - `userId`: `int("user_id").notNull().references(() => users.id)`
-   - `createdAt`: `timestamp("created_at").defaultNow().notNull()`
-4. Export tabel `sessions`.
-5. Jalankan migrasi:
-   - `bun run db:generate` untuk membuat berkas migrasi SQL baru di `drizzle/`.
-   - `bun run db:push` (atau migrasi) untuk menerapkan tabel ke database MySQL.
-
----
-
-### Tahap 2: Tambahkan Method Login di Service (`src/services/users-service.ts`)
-1. Buka `src/services/users-service.ts`.
-2. Import tabel `sessions` dari `../db/schema`.
-3. Buat interface data input dan hasil login:
+### Tahap 1: Tambahkan Method di Service (`src/services/users-service.ts`)
+1. Buka file `src/services/users-service.ts`.
+2. Buat interface untuk data return user dan result:
    ```typescript
-   export interface LoginUserInput {
+   export interface CurrentUserResponse {
+     id: number;
+     name: string;
      email: string;
-     password: string;
+     created_at: Date | string;
    }
 
-   export interface LoginUserResult {
+   export interface GetCurrentUserResult {
      success: boolean;
-     token?: string;
+     user?: CurrentUserResponse;
      error?: string;
    }
    ```
-4. Tambahkan method statis `loginUser(input: LoginUserInput): Promise<LoginUserResult>` pada class `UserService`:
-   - **Langkah 2.1: Cari User**:
-     Query user dari database berdasarkan `email`. Jika tidak ada user yang cocok, return:
-     `{ success: false, error: "Email atau password salah" }`.
-   - **Langkah 2.2: Verifikasi Password**:
-     Gunakan fungsi verifikasi password bawaan Bun:
+3. Tambahkan method statis `getCurrentUser(token: string): Promise<GetCurrentUserResult>` pada class `UserService`:
+   - **Langkah 1.1: Validasi Input Token**:
+     Jika token kosong atau tidak valid, langsung kembalikan:
+     `{ success: false, error: "Unauthorized" }`.
+   - **Langkah 1.2: Cari Session di Database**:
+     Query tabel `sessions` menggunakan Drizzle:
      ```typescript
-     const isPasswordValid = await Bun.password.verify(input.password, user.password);
+     const [session] = await db
+       .select()
+       .from(sessions)
+       .where(eq(sessions.token, token))
+       .limit(1);
      ```
-     Jika `isPasswordValid` bernilai `false`, return:
-     `{ success: false, error: "Email atau password salah" }`.
-   - **Langkah 2.3: Generate Token Session**:
-     Generate token UUID menggunakan native Bun/Web Crypto API:
+     Jika session tidak ditemukan, return `{ success: false, error: "Unauthorized" }`.
+   - **Langkah 1.3: Ambil Data User Berdasarkan `userId` dari Session**:
+     Query tabel `users` berdasarkan `session.userId`:
      ```typescript
-     const token = crypto.randomUUID();
+     const [user] = await db
+       .select({
+         id: users.id,
+         name: users.name,
+         email: users.email,
+         created_at: users.createdAt,
+       })
+       .from(users)
+       .where(eq(users.id, session.userId))
+       .limit(1);
      ```
-   - **Langkah 2.4: Simpan Session**:
-     Insert ke tabel `sessions`:
-     ```typescript
-     await db.insert(sessions).values({
-       token: token,
-       userId: user.id,
-     });
-     ```
-   - **Langkah 2.5: Kembalikan Token**:
-     Return `{ success: true, token }`.
+     Jika user tidak ditemukan, return `{ success: false, error: "Unauthorized" }`.
+   - **Langkah 1.4: Kembalikan Data User**:
+     Return `{ success: true, user }`.
 
 ---
 
-### Tahap 3: Tambahkan Endpoint di Route (`src/routes/users-route.ts`)
-1. Buka `src/routes/users-route.ts`.
-2. Tambahkan handler route `POST /login` pada instance `usersRoute`:
-   ```typescript
-   .post(
-     "/login",
-     async ({ body, set }) => {
-       const result = await UserService.loginUser({
-         email: body.email,
-         password: body.password,
-       });
-
-       if (!result.success) {
-         set.status = 400;
-         return {
-           error: result.error,
-         };
-       }
-
-       set.status = 200;
-       return {
-         data: result.token,
-       };
-     },
-     {
-       body: t.Object({
-         email: t.String({ minLength: 1 }),
-         password: t.String({ minLength: 1 }),
-       }),
+### Tahap 2: Tambahkan Endpoint `GET /current` di Route (`src/routes/users-route.ts`)
+1. Buka file `src/routes/users-route.ts`.
+2. Tambahkan handler route `.get("/current", ...)` pada instance `usersRoute`:
+   - **Langkah 2.1: Ekstraksi Header Authorization**:
+     Ambil header `authorization` dari request:
+     ```typescript
+     const authHeader = headers["authorization"];
+     ```
+   - **Langkah 2.2: Validasi Format Bearer Token**:
+     Periksa apakah header ada dan diawali dengan `"Bearer "`:
+     ```typescript
+     if (!authHeader || !authHeader.startsWith("Bearer ")) {
+       set.status = 401;
+       return { error: "Unauthorized" };
      }
-   )
-   ```
-3. Pastikan path lengkap endpoint menjadi `/api/users/login` (karena prefix route adalah `/api/users`).
+     const token = authHeader.slice(7).trim();
+     if (!token) {
+       set.status = 401;
+       return { error: "Unauthorized" };
+     }
+     ```
+   - **Langkah 2.3: Panggil Service**:
+     Panggil `UserService.getCurrentUser(token)`:
+     - Jika `!result.success`:
+       Set status `401` dan kembalikan `{ error: "Unauthorized" }`.
+     - Jika `result.success`:
+       Set status `200` dan kembalikan `{ data: result.user }`.
+3. Pastikan path endpoint lengkap menjadi `/api/users/current` (mengikuti prefix `/api/users`).
 
 ---
 
-### Tahap 4: Verifikasi & Testing
-Jalankan server dan uji coba alur login:
+### Tahap 3: Verifikasi & Testing
+Jalankan server aplikasi dan lakukan pengujian berbagai skenario:
 
-1. **Uji Coba Login Berhasil (Happy Path)**:
-   - Pastikan user sudah terdaftar terlebih dahulu (misal: `eko@localhost` dengan password `rahasia`).
-   - Kirim request login:
+1. **Uji Coba Berhasil (Happy Path)**:
+   - Login terlebih dahulu (`POST /api/users/login`) untuk mendapatkan `<token>`.
+   - Request profil dengan token valid:
      ```bash
-     curl -X POST http://localhost:3000/api/users/login \
-       -H "Content-Type: application/json" \
-       -d '{"email": "eko@localhost", "password": "rahasia"}'
+     curl -X GET http://localhost:3000/api/users/current \
+       -H "Authorization: Bearer <token>"
      ```
-   - *Ekspektasi*: HTTP 200 dengan format response `{"data": "<uuid-token>"}`.
-   - Periksa database: Record token baru tersimpan di tabel `sessions` dengan `user_id` milik user tersebut.
-
-2. **Uji Coba Password Salah**:
-   - Kirim request dengan password keliru:
-     ```bash
-     curl -X POST http://localhost:3000/api/users/login \
-       -H "Content-Type: application/json" \
-       -d '{"email": "eko@localhost", "password": "passwordsalah"}'
-     ```
-   - *Ekspektasi*: HTTP 400 dengan response:
+   - *Ekspektasi*: HTTP Status `200` dengan response data user lengkap (tanpa password):
      ```json
-     { "error": "Email atau password salah" }
+     {
+       "data": {
+         "id": 1,
+         "name": "eko",
+         "email": "eko@localhost",
+         "created_at": "..."
+       }
+     }
      ```
 
-3. **Uji Coba Email Tidak Terdaftar**:
-   - Kirim request dengan email yang belum pernah didaftarkan:
+2. **Uji Coba Token Tidak Valid / Palsu**:
+   - Kirim request dengan token sembarang:
      ```bash
-     curl -X POST http://localhost:3000/api/users/login \
-       -H "Content-Type: application/json" \
-       -d '{"email": "tidakada@localhost", "password": "rahasia"}'
+     curl -X GET http://localhost:3000/api/users/current \
+       -H "Authorization: Bearer token-ngawur"
      ```
-   - *Ekspektasi*: HTTP 400 dengan response:
-     ```json
-     { "error": "Email atau password salah" }
+   - *Ekspektasi*: HTTP Status `401` dengan response `{"error": "Unauthorized"}`.
+
+3. **Uji Coba Tanpa Header Authorization**:
+   - Kirim request tanpa header Authorization:
+     ```bash
+     curl -X GET http://localhost:3000/api/users/current
      ```
+   - *Ekspektasi*: HTTP Status `401` dengan response `{"error": "Unauthorized"}`.
 
 4. **Uji Typecheck**:
    - Jalankan `bun check` untuk memastikan seluruh tipe data TypeScript valid tanpa error.
@@ -217,12 +183,11 @@ Jalankan server dan uji coba alur login:
 ---
 
 ## ✅ Checklist Implementasi (Action Items)
-- [x] Schema `sessions` ditambahkan pada `src/db/schema.ts` dengan foreign key ke `users.id`.
-- [x] Berkas migrasi database digenerate via `bun run db:generate` dan diaplikasikan.
-- [x] Method `loginUser` diimplementasikan di `src/services/users-service.ts`.
-- [x] Verifikasi password menggunakan `Bun.password.verify`.
-- [x] Token UUID digenerate via `crypto.randomUUID()` dan disimpan ke tabel `sessions`.
-- [x] Endpoint `POST /api/users/login` ditambahkan di `src/routes/users-route.ts`.
-- [x] Handler mengembalikan HTTP 200 `{ "data": "<token>" }` jika login sukses.
-- [x] Handler mengembalikan HTTP 400 `{ "error": "Email atau password salah" }` jika gagal.
-- [x] Seluruh pengujian manual (happy path, password salah, email tidak terdaftar) dan `bun check` lulus tanpa error.
+- [x] Method `getCurrentUser(token: string)` diimplementasikan di `src/services/users-service.ts`.
+- [x] Query pencarian session berdasarkan `token` pada tabel `sessions`.
+- [x] Query user berdasarkan `userId` pada tabel `users` (hanya field `id`, `name`, `email`, `created_at` tanpa `password`).
+- [x] Endpoint `GET /current` ditambahkan pada `src/routes/users-route.ts`.
+- [x] Ekstraksi dan parsing header `Authorization: Bearer <token>`.
+- [x] Mengembalikan HTTP 401 `{ "error": "Unauthorized" }` jika token tidak ada, salah format, atau session tidak valid.
+- [x] Mengembalikan HTTP 200 `{ "data": { ... } }` jika autentikasi berhasil.
+- [x] Seluruh pengujian (happy path, token salah, tanpa header) dan `bun check` lulus tanpa error.
