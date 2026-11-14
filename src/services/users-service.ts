@@ -37,6 +37,11 @@ export interface GetCurrentUserResult {
   error?: string;
 }
 
+export interface LogoutUserResult {
+  success: boolean;
+  error?: string;
+}
+
 export class UserService {
   static async registerUser(input: RegisterUserInput): Promise<RegisterUserResult> {
     // 1. Cek apakah email sudah terdaftar
@@ -154,6 +159,36 @@ export class UserService {
     return {
       success: true,
       user,
+    };
+  }
+
+  static async logoutUser(token: string): Promise<LogoutUserResult> {
+    if (!token) {
+      return {
+        success: false,
+        error: "Unauthorized",
+      };
+    }
+
+    // 1. Periksa apakah session dengan token tersebut ada
+    const [session] = await db
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(eq(sessions.token, token))
+      .limit(1);
+
+    if (!session) {
+      return {
+        success: false,
+        error: "Unauthorized",
+      };
+    }
+
+    // 2. Hapus data session dari tabel sessions
+    await db.delete(sessions).where(eq(sessions.token, token));
+
+    return {
+      success: true,
     };
   }
 }
