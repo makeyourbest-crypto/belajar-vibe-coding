@@ -1,180 +1,103 @@
-# Plan: Implementasi API Logout User (`DELETE /api/users/logout`)
+# Bug: Validasi Panjang Maksimum (maxLength) pada Input User Belum Diterapkan
 
-## 📌 Deskripsi Tugas
-Implementasikan endpoint API untuk proses logout pengguna (`user logout`). Ketika user melakukan logout, token autentikasi yang dikirimkan via header Authorization akan diverifikasi, dan data session terkait yang tersimpan di tabel `sessions` akan dihapus dari database MySQL.
+## 📌 Deskripsi Masalah
+Saat melakukan registrasi user baru melalui endpoint `POST /api/users`, field `name`, `email`, dan `password` belum memiliki batasan panjang maksimum (*maximum length*) pada layer validasi ElysiaJS. 
 
-Panduan ini disusun secara terstruktur langkah demi langkah agar dapat diimplementasikan dengan mudah oleh junior programmer atau model AI.
-
----
-
-## 📋 Spesifikasi Fitur
-
-### 1. Spesifikasi Endpoint API
-- **Method**: `DELETE`
-- **Path**: `/api/users/logout`
-- **Header**:
-  - `Authorization`: `Bearer <token>` (token session milik user yang sedang aktif dan tersimpan di tabel `sessions`).
-
-#### Response Body: Berhasil (HTTP Status 200)
-Jika token valid dan session berhasil dihapus dari database:
-```json
-{
-  "data": "ok"
-}
-```
-
-#### Aturan Database:
-- Data baris (*row*) pada tabel `sessions` yang memiliki nilai `token` sesuai dengan token yang dikirimkan **harus dihapus secara permanen** dari database.
-- Setelah dihapus, token tersebut tidak lagi dapat digunakan untuk mengakses endpoint yang membutuhkan otentikasi (seperti `GET /api/users/current`).
-
-#### Response Body: Gagal / Tidak Terotentikasi (HTTP Status 401)
-Jika header `Authorization` tidak dikirim, format tidak sesuai (`Bearer <token>`), token kosong, atau token tidak ditemukan di tabel `sessions`:
-```json
-{
-  "error": "Unauthorized"
-}
-```
+Ketika dikirimkan payload dengan panjang karakter melebihi kapasitas kolom database (misalnya `name` dengan 300 karakter):
+1. **Pada MySQL Non-Strict Mode**: Data tersimpan ke database namun karakternya dipotong secara diam-diam (*silent truncation*) menjadi 255 karakter tanpa peringatan kepada pengguna.
+2. **Pada MySQL Strict Mode (`STRICT_TRANS_TABLES`)**: Database melempar error `ER_DATA_TOO_LONG: Data too long for column 'name'`, yang menyebabkan kegagalan fatal dengan respons `HTTP 500 Internal Server Error`.
 
 ---
 
-## 📂 Aturan Struktur Folder & Penamaan File
-Tetap mengikuti arsitektur berlapis (*layered architecture*) di dalam direktori `src/`:
-
-```text
-src/
-├── db/
-│   ├── index.ts              # Konfigurasi koneksi MySQL pool & Drizzle
-│   └── schema.ts             # Definisi tabel (users, sessions, posts)
-├── services/                 # Layer Business Logic
-│   └── users-service.ts      # Logic validasi token dan penghapusan session dari database
-├── routes/                   # Layer Routing & HTTP Controller
-│   └── users-route.ts        # Route Elysia, ekstraksi header, pemanggilan service, mapping response
-└── index.ts                  # Entry point utama aplikasi
-```
+## 🔍 Lokasi Masalah
+- **File**: `src/routes/users-route.ts`
+- **Bagian**: Schema validasi request body pada handler `POST /` (registrasi) dan `POST /login`:
+  ```typescript
+  body: t.Object({
+    name: t.String({ minLength: 1 }),
+    email: t.String({ minLength: 1 }),
+    password: t.String({ minLength: 1 }),
+  })
+  ```
+  *Masalah*: Hanya ada `minLength: 1`, tidak ada `maxLength: 255`.
 
 ---
 
-## 🛠️ Tahapan Implementasi
-
-### Tahap 1: Buat Business Logic di Service (`src/services/users-service.ts`)
-1. Buka file `src/services/users-service.ts`.
-2. Buat interface untuk hasil operasi logout:
-   ```typescript
-   export interface LogoutUserResult {
-     success: boolean;
-     error?: string;
-   }
-   ```
-3. Tambahkan method statis `logoutUser(token: string): Promise<LogoutUserResult>` pada class `UserService`:
-   - **Langkah 1.1: Validasi Parameter Token**:
-     Jika token kosong atau falsy, kembalikan:
-     `{ success: false, error: "Unauthorized" }`.
-   - **Langkah 1.2: Periksa Keberadaan Session di Database**:
-     Cari session di tabel `sessions`:
-     ```typescript
-     const [session] = await db
-       .select({ id: sessions.id })
-       .from(sessions)
-       .where(eq(sessions.token, token))
-       .limit(1);
-     ```
-     Jika session tidak ditemukan, return `{ success: false, error: "Unauthorized" }`.
-   - **Langkah 1.3: Hapus Data Session dari Tabel `sessions`**:
-     Jalankan operasi `delete` pada tabel `sessions`:
-     ```typescript
-     await db.delete(sessions).where(eq(sessions.token, token));
-     ```
-   - **Langkah 1.4: Kembalikan Status Sukses**:
-     Return `{ success: true }`.
+## 🎯 Perilaku yang Diharapkan (Expected Behavior)
+1. Layer validasi ElysiaJS harus menolak request yang memiliki field string melebihi batas kolom database (`VARCHAR(255)`).
+2. Jika pengguna mengirimkan `name`, `email`, atau `password` dengan panjang lebih dari **255 karakter**, server harus langsung menolak di layer awal dengan status **HTTP 422 Unprocessable Content** (standar validasi Elysia) sebelum menyentuh database.
+3. Jika panjang karakter antara 1 hingga 255, request diproses normal (HTTP 200 OK).
 
 ---
 
-### Tahap 2: Tambahkan Endpoint `DELETE /logout` di Route (`src/routes/users-route.ts`)
+## 🛠️ Tahapan Perbaikan (Step-by-Step Guide)
+
+### Tahap 1: Perbarui Schema Validasi Registrasi (`src/routes/users-route.ts`)
 1. Buka file `src/routes/users-route.ts`.
-2. Tambahkan handler route `.delete("/logout", ...)` pada instance `usersRoute`:
-   - **Langkah 2.1: Ekstraksi Header Authorization**:
-     Ambil header `authorization` dari request context:
-     ```typescript
-     const authHeader = headers["authorization"];
-     ```
-   - **Langkah 2.2: Validasi Format Bearer Token**:
-     Periksa apakah header tersedia dan berawalan `"Bearer "`:
-     ```typescript
-     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-       set.status = 401;
-       return { error: "Unauthorized" };
-     }
+2. Cari bagian validasi body pada endpoint registrasi (`POST /`):
+   ```typescript
+   // SEBELUM:
+   body: t.Object({
+     name: t.String({ minLength: 1 }),
+     email: t.String({ minLength: 1 }),
+     password: t.String({ minLength: 1 }),
+   })
+   ```
+3. Tambahkan properti `maxLength: 255` pada setiap field:
+   ```typescript
+   // SESUDAH:
+   body: t.Object({
+     name: t.String({ minLength: 1, maxLength: 255 }),
+     email: t.String({ minLength: 1, maxLength: 255 }),
+     password: t.String({ minLength: 1, maxLength: 255 }),
+   })
+   ```
 
-     const token = authHeader.slice(7).trim();
-     if (!token) {
-       set.status = 401;
-       return { error: "Unauthorized" };
-     }
-     ```
-   - **Langkah 2.3: Panggil Service**:
-     Panggil `UserService.logoutUser(token)`:
-     - Jika `!result.success`:
-       Set status `401` dan kembalikan response:
-       ```json
-       { "error": "Unauthorized" }
-       ```
-     - Jika `result.success`:
-       Set status `200` dan kembalikan response:
-       ```json
-       { "data": "ok" }
-       ```
-3. Pastikan path endpoint lengkap menjadi `DELETE /api/users/logout` (karena prefix route adalah `/api/users`).
+---
+
+### Tahap 2: Perbarui Schema Validasi Login (`src/routes/users-route.ts`)
+1. Pada file yang sama (`src/routes/users-route.ts`), cari bagian validasi body pada endpoint login (`POST /login`).
+2. Tambahkan batasan `maxLength: 255` untuk `email` dan `password`:
+   ```typescript
+   body: t.Object({
+     email: t.String({ minLength: 1, maxLength: 255 }),
+     password: t.String({ minLength: 1, maxLength: 255 }),
+   })
+   ```
 
 ---
 
 ### Tahap 3: Verifikasi & Testing
-Jalankan server aplikasi dan lakukan pengujian berbagai skenario:
+Jalankan server atau pengujian otomatis menggunakan Bun:
 
-1. **Uji Coba Logout Berhasil (Happy Path)**:
-   - Login terlebih dahulu (`POST /api/users/login`) untuk mendapatkan `<token>`.
-   - Kirim request logout:
-     ```bash
-     curl -X DELETE http://localhost:3000/api/users/logout \
-       -H "Authorization: Bearer <token>"
-     ```
-   - *Ekspektasi*: HTTP Status `200` dengan response `{"data": "ok"}`.
-   - *Verifikasi Database*: Pastikan baris data token tersebut sudah tidak ada lagi di tabel `sessions`.
-   - *Verifikasi Invalidasi*: Coba panggil `GET /api/users/current` menggunakan token tersebut, pastikan sekarang mengembalikan status `401 Unauthorized`.
+1. **Uji Coba Validasi Gagal (Karakter > 255)**:
+   Kirim request registrasi dengan `name` sepanjang 300 karakter:
+   ```bash
+   curl -X POST http://localhost:3000/api/users \
+     -H "Content-Type: application/json" \
+     -d '{"name": "'$(python -c "print('a'*300)")'", "email": "test@example.com", "password": "secretpassword"}'
+   ```
+   *Ekspektasi*:
+   - Server merespon dengan status **HTTP 422 (Unprocessable Content)**.
+   - Database tidak melakukan operasi INSERT apa pun.
 
-2. **Uji Coba Logout Ulang dengan Token yang Sudah Dihapus**:
-   - Kirim request logout kedua kali dengan token yang sama persis:
-     ```bash
-     curl -X DELETE http://localhost:3000/api/users/logout \
-       -H "Authorization: Bearer <token>"
-     ```
-   - *Ekspektasi*: HTTP Status `401` dengan response `{"error": "Unauthorized"}`.
+2. **Uji Coba Validasi Berhasil (Karakter <= 255)**:
+   Kirim request registrasi dengan `name` normal (misal 5 karakter atau tepat 255 karakter):
+   *Ekspektasi*:
+   - Server merespon dengan status **HTTP 200 OK** (`{"data": "OK"}`).
 
-3. **Uji Coba Token Tidak Valid / Palsu**:
-   - Kirim request logout dengan token sembarang:
-     ```bash
-     curl -X DELETE http://localhost:3000/api/users/logout \
-       -H "Authorization: Bearer token-acak-palsu"
-     ```
-   - *Ekspektasi*: HTTP Status `401` dengan response `{"error": "Unauthorized"}`.
-
-4. **Uji Coba Tanpa Header Authorization**:
-   - Kirim request logout tanpa menyertakan header Authorization:
-     ```bash
-     curl -X DELETE http://localhost:3000/api/users/logout
-     ```
-   - *Ekspektasi*: HTTP Status `401` dengan response `{"error": "Unauthorized"}`.
-
-5. **Uji Typecheck**:
-   - Jalankan `bun check` untuk memastikan seluruh kode TypeScript bebas dari error tipe.
+3. **Uji Typecheck TypeScript**:
+   Jalankan perintah berikut di terminal:
+   ```bash
+   bun check
+   ```
+   *Ekspektasi*: Tidak ada type error.
 
 ---
 
-## ✅ Checklist Implementasi (Action Items)
-- [x] Method `logoutUser(token: string)` diimplementasikan di `src/services/users-service.ts`.
-- [x] Pengecekan token session pada tabel `sessions`.
-- [x] Eksekusi penghapusan record session (`db.delete(sessions)`) berdasarkan token.
-- [x] Endpoint `DELETE /logout` ditambahkan pada `src/routes/users-route.ts`.
-- [x] Validasi parsing header `Authorization: Bearer <token>`.
-- [x] Mengembalikan HTTP 200 `{ "data": "ok" }` jika logout dan penghapusan session berhasil.
-- [x] Mengembalikan HTTP 401 `{ "error": "Unauthorized" }` jika token tidak ditemukan atau header tidak valid.
-- [x] Seluruh pengujian manual (happy path, double logout, token palsu, tanpa header) dan `bun check` lulus tanpa error.
+## ✅ Checklist Perbaikan (Action Items)
+- [x] Menambahkan `maxLength: 255` pada validasi `name`, `email`, dan `password` di endpoint registrasi (`src/routes/users-route.ts`).
+- [x] Menambahkan `maxLength: 255` pada validasi `email` dan `password` di endpoint login (`src/routes/users-route.ts`).
+- [x] Pengujian registrasi dengan `name` > 255 karakter menghasilkan status HTTP 422.
+- [x] Pengujian registrasi dengan data normal (<= 255 karakter) berjalan sukses dengan status HTTP 200.
+- [x] `bun check` lulus tanpa error.
