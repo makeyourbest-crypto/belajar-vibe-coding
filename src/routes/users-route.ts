@@ -30,6 +30,12 @@ export const usersRoute = new Elysia({ prefix: "/api/users" })
         email: t.String({ minLength: 1, maxLength: 255 }),
         password: t.String({ minLength: 1, maxLength: 255 }),
       }),
+      detail: {
+        tags: ["Users"],
+        summary: "Registrasi pengguna baru",
+        description:
+          "Mendaftarkan user baru dengan name (max 255), email unik (max 255), dan password (max 255).",
+      },
     }
   )
   .post(
@@ -57,6 +63,12 @@ export const usersRoute = new Elysia({ prefix: "/api/users" })
         email: t.String({ minLength: 1, maxLength: 255 }),
         password: t.String({ minLength: 1, maxLength: 255 }),
       }),
+      detail: {
+        tags: ["Users"],
+        summary: "Login pengguna",
+        description:
+          "Memverifikasi kredensial pengguna dan menerbitkan session token UUID baru.",
+      },
     }
   )
   .get(
@@ -82,6 +94,15 @@ export const usersRoute = new Elysia({ prefix: "/api/users" })
       return {
         data: result.user,
       };
+    },
+    {
+      detail: {
+        tags: ["Users"],
+        summary: "Ambil profil user saat ini",
+        description:
+          "Mengambil data profil pengguna yang sedang login berdasarkan Bearer token.",
+        security: [{ bearerAuth: [] }],
+      },
     }
   )
   .delete(
@@ -107,5 +128,14 @@ export const usersRoute = new Elysia({ prefix: "/api/users" })
       return {
         data: "ok",
       };
+    },
+    {
+      detail: {
+        tags: ["Users"],
+        summary: "Logout pengguna",
+        description:
+          "Menghapus session aktif pengguna berdasarkan Bearer token dari database.",
+        security: [{ bearerAuth: [] }],
+      },
     }
   );
