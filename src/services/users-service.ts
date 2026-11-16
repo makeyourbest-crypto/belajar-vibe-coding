@@ -43,6 +43,17 @@ export interface LogoutUserResult {
 }
 
 export class UserService {
+  /**
+   * Mendaftarkan pengguna (user) baru ke dalam sistem.
+   *
+   * Alur kerja:
+   * 1. Mengecek ketersediaan email di database agar tidak terjadi duplikasi akun.
+   * 2. Melakukan hashing password secara aman menggunakan algoritma Bcrypt bawaan Bun (`Bun.password.hash`).
+   * 3. Menyimpan data pengguna baru ke tabel `users`.
+   *
+   * @param input Objek data registrasi yang memuat nama, email, dan password.
+   * @returns Objek hasil registrasi berupa `success: true` jika berhasil, atau pesan error jika gagal.
+   */
   static async registerUser(input: RegisterUserInput): Promise<RegisterUserResult> {
     try {
       // 1. Cek apakah email sudah terdaftar
@@ -81,6 +92,18 @@ export class UserService {
     }
   }
 
+  /**
+   * Memproses otentikasi login pengguna dan menerbitkan session token baru.
+   *
+   * Alur kerja:
+   * 1. Mencari pengguna di database berdasarkan email.
+   * 2. Memverifikasi kecocokan password plaintext dengan hash password Bcrypt (`Bun.password.verify`).
+   * 3. Mengenerate token unik berupa string UUID (`crypto.randomUUID()`).
+   * 4. Menyimpan token session tersebut ke tabel `sessions` terhubung dengan `userId`.
+   *
+   * @param input Objek data login yang memuat email dan password.
+   * @returns Objek hasil login memuat token session UUID jika sukses, atau pesan error seragam jika kredensial salah.
+   */
   static async loginUser(input: LoginUserInput): Promise<LoginUserResult> {
     try {
       // 1. Cari user berdasarkan email
@@ -125,6 +148,17 @@ export class UserService {
     }
   }
 
+  /**
+   * Mengambil data profil pengguna yang saat ini sedang login aktif (current user).
+   *
+   * Alur kerja:
+   * 1. Mencari keberadaan session aktif berdasarkan token pada tabel `sessions`.
+   * 2. Mengambil data profil dari tabel `users` berdasarkan `userId` yang terhubung pada session.
+   * 3. Menyaring data profil (`id`, `name`, `email`, `created_at`) dan memastikan password tidak diekspos.
+   *
+   * @param token Token session UUID yang dikirimkan melalui header Authorization.
+   * @returns Objek hasil profil user jika session valid, atau error "Unauthorized" jika token tidak ditemukan.
+   */
   static async getCurrentUser(token: string): Promise<GetCurrentUserResult> {
     if (!token) {
       return {
@@ -177,6 +211,17 @@ export class UserService {
     }
   }
 
+  /**
+   * Mengakhiri session aktif pengguna (logout) dan menghapus token dari database.
+   *
+   * Alur kerja:
+   * 1. Mengeksekusi penghapusan baris data pada tabel `sessions` berdasarkan token secara langsung.
+   * 2. Memeriksa `affectedRows`: jika bernilai 0 (token tidak ditemukan/sudah dihapus), mengembalikan error "Unauthorized".
+   * 3. Jika berhasil, token session tersebut hangus dan tidak dapat digunakan kembali.
+   *
+   * @param token Token session UUID yang ingin diakhiri.
+   * @returns Objek hasil logout berupa `success: true` jika berhasil dihapus, atau error "Unauthorized" jika tidak valid.
+   */
   static async logoutUser(token: string): Promise<LogoutUserResult> {
     if (!token) {
       return {
